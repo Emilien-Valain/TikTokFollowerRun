@@ -14,7 +14,7 @@ FPS = 60
 GRAVITY = 0.4
 FRICTION = 0.96
 BOUNCE_DAMPING = 0.7
-MAX_SPEED = 5
+MAX_SPEED = 12
 
 # Colors
 WHITE = (255, 255, 255)
@@ -63,31 +63,41 @@ class Marble:
         # Apply friction
         self.vx *= FRICTION
         
-        # Limit velocities
+        # Limit velocities for smoother movement
         if abs(self.vx) > MAX_SPEED:
             self.vx = MAX_SPEED if self.vx > 0 else -MAX_SPEED
         if abs(self.vy) > MAX_SPEED:
             self.vy = MAX_SPEED if self.vy > 0 else -MAX_SPEED
         
+        # Store old position
+        old_x, old_y = self.x, self.y
+        
         # Update position
         self.x += self.vx
         self.y += self.vy
         
-        # Bounce off screen edges
-        if self.x - self.radius <= 0 or self.x + self.radius >= SCREEN_WIDTH:
+        # Bounce off screen edges smoothly
+        if self.x - self.radius <= 0:
+            self.x = self.radius
             self.vx *= -BOUNCE_DAMPING
-            self.x = max(self.radius, min(SCREEN_WIDTH - self.radius, self.x))
+        elif self.x + self.radius >= SCREEN_WIDTH:
+            self.x = SCREEN_WIDTH - self.radius
+            self.vx *= -BOUNCE_DAMPING
         
-        # Check collision with other marbles
-        for other_marble in other_marbles:
-            if other_marble != self and not other_marble.finished:
-                if self.check_marble_collision(other_marble):
-                    self.handle_marble_collision(other_marble)
-        
-        # Check collision with obstacles
+        # Check collision with obstacles first
+        collision_occurred = False
         for obstacle in obstacles:
             if self.check_collision(obstacle):
                 self.handle_collision(obstacle)
+                collision_occurred = True
+                break
+        
+        # Check collision with other marbles (only if no obstacle collision)
+        if not collision_occurred:
+            for other_marble in other_marbles:
+                if other_marble != self and not other_marble.finished:
+                    if self.check_marble_collision(other_marble):
+                        self.handle_marble_collision(other_marble)
         
         # Check if reached bottom (finish line)
         if self.y > WORLD_HEIGHT - 100:
@@ -107,34 +117,53 @@ class Marble:
         distance = math.sqrt(dx**2 + dy**2)
         
         if distance == 0:
-            dx, dy = 1, 0
-            distance = 1
+            # If marbles are exactly on top of each other, separate them
+            angle = random.random() * 2 * math.pi
+            dx, dy = math.cos(angle), math.sin(angle)
+            distance = 0.1
         
+        # Normalize collision vector
         nx = dx / distance
         ny = dy / distance
         
-        # Separate marbles
-        overlap = (self.radius + other_marble.radius) - distance
-        if overlap > 0:
-            self.x += nx * overlap * 0.5
-            self.y += ny * overlap * 0.5
-            other_marble.x -= nx * overlap * 0.5
-            other_marble.y -= ny * overlap * 0.5
+        # Calculate minimum separation distance
+        min_distance = self.radius + other_marble.radius
         
-        # Calculate collision response
+        # Separate marbles smoothly to prevent overlap
+        if distance < min_distance:
+            overlap = min_distance - distance
+            # Move each marble half the overlap distance
+            separation = overlap * 0.5 + 1  # +1 for small buffer
+            
+            self.x += nx * separation
+            self.y += ny * separation
+            other_marble.x -= nx * separation
+            other_marble.y -= ny * separation
+            
+            # Keep marbles within screen bounds
+            self.x = max(self.radius, min(SCREEN_WIDTH - self.radius, self.x))
+            other_marble.x = max(other_marble.radius, min(SCREEN_WIDTH - other_marble.radius, other_marble.x))
+        
+        # Calculate relative velocity
         dvx = self.vx - other_marble.vx
         dvy = self.vy - other_marble.vy
+        
+        # Calculate relative velocity in collision normal direction
         dvn = dvx * nx + dvy * ny
         
+        # Do not resolve if velocities are separating
         if dvn > 0:
             return
         
-        impulse = 2 * dvn / 2
+        # Collision response with energy conservation
+        # Assuming equal mass for simplicity
+        impulse = dvn * 0.9  # 0.9 for slight energy loss
         
-        self.vx -= impulse * nx * 0.8
-        self.vy -= impulse * ny * 0.8
-        other_marble.vx += impulse * nx * 0.8
-        other_marble.vy += impulse * ny * 0.8
+        # Update velocities smoothly
+        self.vx -= impulse * nx
+        self.vy -= impulse * ny
+        other_marble.vx += impulse * nx
+        other_marble.vy += impulse * ny
     
     def check_collision(self, obstacle):
         closest_x = max(obstacle['x'], min(self.x, obstacle['x'] + obstacle['width']))
@@ -144,27 +173,45 @@ class Marble:
         return distance < self.radius
     
     def handle_collision(self, obstacle):
-        center_x = obstacle['x'] + obstacle['width'] / 2
-        center_y = obstacle['y'] + obstacle['height'] / 2
+        # Find the closest point on the obstacle to the marble
+        closest_x = max(obstacle['x'], min(self.x, obstacle['x'] + obstacle['width']))
+        closest_y = max(obstacle['y'], min(self.y, obstacle['y'] + obstacle['height']))
         
-        dx = self.x - center_x
-        dy = self.y - center_y
+        # Calculate collision normal
+        dx = self.x - closest_x
+        dy = self.y - closest_y
+        distance = math.sqrt(dx**2 + dy**2)
         
-        if abs(dx) > abs(dy):
-            self.vx *= -BOUNCE_DAMPING
-            if dx > 0:
-                self.x = obstacle['x'] + obstacle['width'] + self.radius
-            else:
-                self.x = obstacle['x'] - self.radius
-        else:
-            self.vy *= -BOUNCE_DAMPING
-            if dy > 0:
-                self.y = obstacle['y'] + obstacle['height'] + self.radius
-            else:
-                self.y = obstacle['y'] - self.radius
+        if distance == 0:
+            # Marble is inside obstacle, push it out
+            center_x = obstacle['x'] + obstacle['width'] / 2
+            center_y = obstacle['y'] + obstacle['height'] / 2
+            dx = self.x - center_x
+            dy = self.y - center_y
+            distance = max(1, math.sqrt(dx**2 + dy**2))
         
-        # Add randomness
-        self.vx += random.uniform(-1, 1)
+        # Normalize collision normal
+        nx = dx / distance
+        ny = dy / distance
+        
+        # Move marble outside obstacle smoothly
+        penetration = self.radius - distance
+        if penetration > 0:
+            self.x += nx * (penetration + 1)
+            self.y += ny * (penetration + 1)
+        
+        # Calculate collision response
+        velocity_dot_normal = self.vx * nx + self.vy * ny
+        
+        # Only resolve if moving into obstacle
+        if velocity_dot_normal < 0:
+            # Reflect velocity
+            self.vx -= 2 * velocity_dot_normal * nx * BOUNCE_DAMPING
+            self.vy -= 2 * velocity_dot_normal * ny * BOUNCE_DAMPING
+            
+            # Add slight random perturbation to prevent stuck situations
+            self.vx += random.uniform(-0.3, 0.3)
+            self.vy += random.uniform(-0.1, 0.1)
     
     def draw(self, screen, font, camera_y):
         screen_y = self.y - camera_y
@@ -184,7 +231,8 @@ class Camera:
     def __init__(self):
         self.y = 0
         self.target_y = 0
-        self.smooth_factor = 0.1
+        self.smooth_factor = 0.08  # Slower, smoother camera movement
+        self.velocity = 0
     
     def update(self, marbles):
         # Find the marble that's furthest down (leading the race)
@@ -192,15 +240,18 @@ class Camera:
         if active_marbles:
             leading_marble = max(active_marbles, key=lambda m: m.y)
             # Center camera on leading marble with some offset
-            self.target_y = leading_marble.y - SCREEN_HEIGHT // 2
+            self.target_y = leading_marble.y - SCREEN_HEIGHT // 3  # Show more of what's coming
         else:
             # If all marbles finished, focus on finish line
             finished_marbles = [m for m in marbles if m.finished]
             if finished_marbles:
                 self.target_y = WORLD_HEIGHT - SCREEN_HEIGHT + 50
         
-        # Smooth camera movement
-        self.y += (self.target_y - self.y) * self.smooth_factor
+        # Smooth camera movement with acceleration
+        diff = self.target_y - self.y
+        self.velocity += diff * 0.002  # Smooth acceleration
+        self.velocity *= 0.95  # Damping
+        self.y += self.velocity
         
         # Keep camera within bounds
         self.y = max(0, min(WORLD_HEIGHT - SCREEN_HEIGHT, self.y))
